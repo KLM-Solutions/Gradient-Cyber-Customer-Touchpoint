@@ -2,8 +2,9 @@ import streamlit as st
 from docx import Document
 from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
+import uuid
+import time
 import PyPDF2
-import os
 
 # Environment variables
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
