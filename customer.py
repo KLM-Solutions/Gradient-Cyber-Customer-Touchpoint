@@ -15,6 +15,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
+INDEX_NAME = "gradient-cyber"
 
 # Create or connect to the Pinecone index
 if INDEX_NAME not in pc.list_indexes().names():
