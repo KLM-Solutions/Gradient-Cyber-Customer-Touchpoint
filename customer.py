@@ -2,16 +2,14 @@ import streamlit as st
 from docx import Document
 from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
-import tiktoken
-from tiktoken import get_encoding
-import uuid
-import time
 import PyPDF2
+import os
 
-# Access your API key
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+# Environment variables
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 INDEX_NAME = "gradientcyber"
+
 # Initialize OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -75,15 +73,13 @@ def extract_text_from_pdf(pdf_file):
 
 # Function to truncate text
 def truncate_text(text, max_tokens):
-    tokenizer = get_encoding("cl100k_base")
-    tokens = tokenizer.encode(text)
-    return tokenizer.decode(tokens[:max_tokens])
+    # Rough estimate: 1 token ~= 4 characters
+    return text[:max_tokens * 4]
 
 # Function to count tokens
-def num_tokens_from_string(string: str, encoding_name: str = "cl100k_base") -> int:
-    encoding = tiktoken.get_encoding(encoding_name)
-    num_tokens = len(encoding.encode(string))
-    return num_tokens
+def num_tokens_from_string(string: str) -> int:
+    # Rough estimate: 1 token ~= 4 characters
+    return len(string) // 4
 
 # Function to get embeddings
 def get_embedding(text):
@@ -106,7 +102,7 @@ def upsert_to_pinecone(text, source):
         vectors.append((vector_id, embedding, metadata))
     
     index.upsert(vectors=vectors)
-    time.sleep(1)
+
 # Function to query Pinecone
 def query_pinecone(query, top_k=5):
     query_embedding = get_embedding(query)
@@ -118,12 +114,13 @@ def query_pinecone(query, top_k=5):
         else:
             contexts.append(f"Content from {match['metadata'].get('source', 'unknown source')}")
     return " ".join(contexts)
+
 def get_answer(query):
     context = query_pinecone(query)
     max_context_tokens = 4000
     truncated_context = truncate_text(context, max_context_tokens)
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o-mini",  # Update this to the latest available model
         messages=[
             {"role": "system", "content": SYSTEM_INSTRUCTION},
             {"role": "user", "content": f"Query: {query}\n\nContext: {truncated_context}"}
@@ -151,6 +148,7 @@ with st.sidebar:
             st.text(f"Uploaded: {source}")
         st.subheader("Uploaded Documents")
         st.text(f"Total token count: {total_token_count}")
+
 # Main content area
 st.header("Ask Your Question")
 user_query = st.text_input("What would you like to know about Gradient Cyber's customer touchpoints?")
