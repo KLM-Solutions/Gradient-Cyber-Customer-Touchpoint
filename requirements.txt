@@ -6,4 +6,4 @@ pinecone-client
 PyPDF2
 python-dotenv
 streamlit
-langsmith
+python-docx
