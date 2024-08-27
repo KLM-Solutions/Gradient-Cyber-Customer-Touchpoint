@@ -56,13 +56,13 @@ def chunk_text(text, max_tokens):
 
 def upsert_to_pinecone(json_data, source):
     vectors = []
+    vector_ids = []
     for customer_name, customer_data in json_data.items():
-        # Convert each customer's data to a string, including the customer name
         text = json.dumps({customer_name: customer_data})
         chunks = chunk_text(text, MAX_TOKENS_PER_CHUNK)
         for j, chunk in enumerate(chunks):
             embedding = get_embedding(chunk)
-            chunk_source = f"{source}_{j+1}"  # Include chunk number in source
+            chunk_source = f"{source}_{j+1}"
             metadata = {
                 "source": chunk_source,
                 "text": chunk,
@@ -71,40 +71,38 @@ def upsert_to_pinecone(json_data, source):
             }
             vector_id = f"{chunk_source}_{customer_name}"
             vectors.append((vector_id, embedding, metadata))
+            vector_ids.append(vector_id)
     
-    # Upsert in batches of 100
     for i in range(0, len(vectors), 100):
         batch = vectors[i:i+100]
         index.upsert(vectors=batch)
-        time.sleep(1)  # To avoid hitting rate limits
+        time.sleep(1)
+    
+    return vector_ids
 
-# Function to query Pinecone
-def query_pinecone(query, top_k=20):
-    query_embedding = get_embedding(query)
-    results = index.query(vector=query_embedding, top_k=top_k, include_metadata=True)
+def fetch_from_pinecone(vector_ids):
+    fetch_response = index.fetch(ids=vector_ids)
     contexts = []
-    for match in results['matches']:
-        if 'text' in match['metadata']:
-            contexts.append(match['metadata']['text'])
+    for vector_id, vector_data in fetch_response['vectors'].items():
+        if 'text' in vector_data['metadata']:
+            contexts.append(vector_data['metadata']['text'])
         else:
-            contexts.append(f"Content from {match['metadata'].get('source', 'unknown source')}")
+            contexts.append(f"Content from {vector_data['metadata'].get('source', 'unknown source')}")
     return contexts
 
-def get_answer(query):
-    contexts = query_pinecone(query)
+def get_answer(query, vector_ids):
+    contexts = fetch_from_pinecone(vector_ids)
     full_context = " ".join(contexts)
     
-    # Prepare the messages for the LLM call
     messages = [
         {"role": "system", "content": SYSTEM_INSTRUCTION},
         {"role": "user", "content": f"Query: {query}\n\nContext: {full_context}"}
     ]
     
-    # Make a single call to the LLM
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # Ensure this model can handle your maximum context length
+        model="gpt-4-0613",
         messages=messages,
-        max_tokens=1000  # Adjust as needed
+        max_tokens=1000
     )
     
     answer = response.choices[0].message.content.strip()
@@ -122,15 +120,18 @@ with st.sidebar:
     if uploaded_files:
         if st.button("Upsert to Pinecone"):
             with st.spinner("Upserting data to Pinecone..."):
+                all_vector_ids = []
                 for uploaded_file in uploaded_files:
                     try:
                         json_data = json.load(uploaded_file)
-                        upsert_to_pinecone(json_data, uploaded_file.name)
+                        vector_ids = upsert_to_pinecone(json_data, uploaded_file.name)
+                        all_vector_ids.extend(vector_ids)
                         st.success(f"Data from {uploaded_file.name} upserted successfully!")
                     except json.JSONDecodeError:
                         st.error(f"Invalid JSON file: {uploaded_file.name}. Skipping this file.")
                     except Exception as e:
                         st.error(f"An error occurred while processing {uploaded_file.name}: {str(e)}")
+                st.session_state['vector_ids'] = all_vector_ids
             st.success("All valid files have been processed and upserted to Pinecone.")
 
 # Main content area
@@ -138,10 +139,12 @@ st.header("Query Your Data")
 user_query = st.text_input("What would you like to know about?")
 
 if st.button("Get Answer"):
-    if user_query:
+    if user_query and 'vector_ids' in st.session_state:
         with st.spinner("Generating answer..."):
-            answer = get_answer(user_query)
+            answer = get_answer(user_query, st.session_state['vector_ids'])
             st.subheader("Answer:")
             st.write(answer)
+    elif 'vector_ids' not in st.session_state:
+        st.warning("Please upload and upsert data before querying.")
     else:
         st.warning("Please enter a question before searching.")
