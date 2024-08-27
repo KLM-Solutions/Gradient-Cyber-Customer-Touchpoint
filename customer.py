@@ -29,7 +29,7 @@ if INDEX_NAME not in pc.list_indexes().names():
 index = pc.Index(INDEX_NAME)
 
 # System Instruction for the AI
-SYSTEM_INSTRUCTION = """You are an AI assistant. Provide only accurate answers based on the given context. Do not make assumptions."""
+SYSTEM_INSTRUCTION = """You are an AI assistant. Provide only accurate answers based on the given context. If the information is not available in the context, clearly state that. Do not make assumptions or provide information that is not supported by the given context."""
 
 # Function to count tokens
 def num_tokens_from_string(string: str, encoding_name: str = "cl100k_base") -> int:
@@ -78,37 +78,66 @@ def upsert_to_pinecone(json_data, source):
         index.upsert(vectors=batch)
         time.sleep(1)  # To avoid hitting rate limits
 
-# Function to query Pinecone
-def query_pinecone(query, top_k=20):
+# Improved function to query Pinecone
+def improved_query_pinecone(query, top_k=20):
     query_embedding = get_embedding(query)
     results = index.query(vector=query_embedding, top_k=top_k, include_metadata=True)
     contexts = []
     for match in results['matches']:
         if 'text' in match['metadata']:
-            contexts.append(match['metadata']['text'])
-        else:
-            contexts.append(f"Content from {match['metadata'].get('source', 'unknown source')}")
-    return contexts
-
-def get_answer(query):
-    contexts = query_pinecone(query)
-    full_context = " ".join(contexts)
+            contexts.append({
+                'text': match['metadata']['text'],
+                'score': match['score'],
+                'source': match['metadata'].get('source', 'unknown source')
+            })
     
-    # Prepare the messages for the LLM call
+    # Sort contexts by relevance score
+    contexts.sort(key=lambda x: x['score'], reverse=True)
+    
+    # Aggregate context, prioritizing higher-scored matches
+    aggregated_context = "\n".join([f"Source: {c['source']} (Score: {c['score']:.2f})\n{c['text']}" for c in contexts])
+    
+    return aggregated_context, contexts
+
+# Improved function to generate answers
+def improved_get_answer(query):
+    aggregated_context, contexts = improved_query_pinecone(query)
+    
     messages = [
         {"role": "system", "content": SYSTEM_INSTRUCTION},
-        {"role": "user", "content": f"Query: {query}\n\nContext: {full_context}"}
+        {"role": "user", "content": f"Query: {query}\n\nContext: {aggregated_context}\n\nPlease provide a detailed and accurate answer based on the given context. If the information is not available in the context, clearly state that."}
     ]
     
-    # Make a single call to the LLM
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # Ensure this model can handle your maximum context length
+        model="gpt-4",  # Use the most capable model available
         messages=messages,
-        max_tokens=1000  # Adjust as needed
+        max_tokens=1000,
+        temperature=0.2  # Lower temperature for more focused answers
     )
     
     answer = response.choices[0].message.content.strip()
+    
+    # Add source information to the answer
+    answer += "\n\nSources: " + ", ".join(set([c['source'] for c in contexts if c['score'] > 0.7]))
+    
     return answer
+
+# Function to validate answers
+def validate_answer(query, answer):
+    validation_prompt = f"Query: {query}\n\nProposed Answer: {answer}\n\nPlease evaluate the above answer for accuracy and relevance to the query. If there are any inaccuracies or missing information, please provide corrections."
+    
+    validation_response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a critical evaluator. Your task is to assess the accuracy and completeness of the given answer."},
+            {"role": "user", "content": validation_prompt}
+        ],
+        max_tokens=500,
+        temperature=0.2
+    )
+    
+    validation_result = validation_response.choices[0].message.content.strip()
+    return validation_result
 
 # Streamlit Interface
 st.set_page_config(page_title="Pinecone Multi-File Upserter and Querier", layout="wide")
@@ -140,8 +169,13 @@ user_query = st.text_input("What would you like to know about?")
 if st.button("Get Answer"):
     if user_query:
         with st.spinner("Generating answer..."):
-            answer = get_answer(user_query)
+            answer = improved_get_answer(user_query)
+            validation = validate_answer(user_query, answer)
+            
             st.subheader("Answer:")
             st.write(answer)
+            
+            st.subheader("Answer Validation:")
+            st.write(validation)
     else:
         st.warning("Please enter a question before searching.")
